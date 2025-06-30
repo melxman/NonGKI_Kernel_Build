@@ -8,7 +8,8 @@ env:
   KERNELSU_METHOD: "only" # shell, manual and only.
   PATCHES_SOURCE: "JackA1ltman/NonGKI_Kernel_Patches" # [your_name]/[your_patch] -> gooder123/NonGKI_Patcher
   PATCHES_BRANCH: "mi_kernel" # [your_branch] -> main
-  HOOK_METHOD: "normal" # manual hook method,can choice vfs and normal.
+  HOOK_METHOD: "normal" # manual hook method,can choice syscall and normal.
+  HOOK_OLDER: "false" # contain backport older patch and syscall older patch.
   PROFILE_NAME: "star_hyper_a14.env" # your profile name.
   KERNELSU_SUS_PATCH: "false" # if u need manual susfs patch to kernelsu.
   KPM_ENABLE: "false" # Only use it for SukiSU-Ultra.
@@ -55,6 +56,7 @@ jobs:
               KERNELSU_NAME
               SUSFS_ENABLE
               SUSFS_FIXED
+              SUSFS_UPDATE
               AK3_SOURCE
               AK3_BRANCH
               BOOT_SOURCE
@@ -361,8 +363,6 @@ jobs:
       - name: Patch Kernel for no-kprobe
         run: |
           cd $GITHUB_WORKSPACE
-          KERNEL=$(echo "${{ env.KERNEL_VERSION }}" | awk -F '.' '{print $1}')
-          PATCHLEVEL=$(echo "${{ env.KERNEL_VERSION }}" | awk -F '.' '{print $2}')
           if grep -q "CONFIG_KSU" "device_kernel/fs/exec.c"; then
             echo "Your kernel source code appears to have been manually patched, so this step is skipped."
           else
@@ -370,47 +370,51 @@ jobs:
               if [[ -f "/tmp/Patches/normal_patches.sh" ]]; then
                   cp /tmp/Patches/normal_patches.sh device_kernel/
                   cd device_kernel
-                  # bash normal_patches.sh
-                  # 5.4 kernel can use susfs patch and use kprobe
+                  bash normal_patches.sh
                   echo "execuated patch successfully."
-                  if [ $KERNEL -lt 5 ] && [ $PATCHLEVEL -lt 14 ]; then
-                      cp /tmp/Patches/extra_patches.sh ./
-                      bash extra_patches.sh
-                      echo "execuated extra patch successfully."
-                  else
-                      echo "your kernel needn't the patch."
-                  fi
                   if [[ "${{ env.KERNELSU_NAME }}" != "KernelSU-Next" ]]; then
-                      cp /tmp/Patches/backport_patches.sh ./
-                      bash backport_patches.sh
-                      echo "execuated backport patch successfully."
+                        cp /tmp/Patches/backport_patches_older.sh ./
+                        bash backport_patches_older.sh
+                        echo "execuated backport patch older successfully. "
+                  else
+                      echo "your kernel needn't backport patch."
                   fi
               else
                   echo "Cannot found normal_patches.sh in build project , please check u file existed in build project !"
                   false
               fi
-            elif [[ ${{ env.HOOK_METHOD }} == "vfs" ]]; then
-              if [[ -f "/tmp/Patches/vfs_hook_patches.sh" ]]; then
-                  cp /tmp/Patches/vfs_hook_patches.sh device_kernel/
-                  cd device_kernel
-                  bash vfs_hook_patches.sh
-                  echo "execuated vfs patch successfully."
-                  if [ $KERNEL -lt 5 ] && [ $PATCHLEVEL -lt 14 ]; then
-                      cp /tmp/Patches/extra_patches.sh ./
-                      bash extra_patches.sh
-                      echo "execuated extra patch successfully."
-                  else
-                      echo "your kernel needn't extra patch."
-                  fi
-                  if [[ "${{ env.KERNELSU_NAME }}" != "KernelSU-Next" ]]; then
-                      cp /tmp/Patches/backport_patches.sh ./
-                      bash backport_patches.sh
-                      echo "execuated backport patch successfully."
-                  fi
-              else
-                  echo "Cannot found vfs_hook_patches.sh in build project , please check u file existed in build project !"
-                  false
-              fi
+            elif [[ ${{ env.HOOK_METHOD }} == "syscall" ]]; then
+               if [[ -f "/tmp/Patches/syscall_hook_patches_older.sh" ]] && [[ "${{ env.HOOK_OLDER }}" == "true" ]]; then
+                   cp /tmp/Patches/syscall_hook_patches_older.sh device_kernel/
+                   cd device_kernel
+                   bash syscall_hook_patches_older.sh
+                   echo "execuated syscall patch successfully."
+                   if [[ "${{ env.KERNELSU_NAME }}" != "KernelSU-Next" ]]; then
+                     cp /tmp/Patches/backport_patches_older.sh ./
+                     bash backport_patches_older.sh
+                     echo "execuated backport patch older successfully. "
+                   else
+                     echo "your kernel needn't backport patch."
+                   fi
+               elif [[ -f "/tmp/Patches/syscall_hook_patches.sh" ]]; then
+                   cp /tmp/Patches/syscall_hook_patches.sh device_kernel/
+                   cd device_kernel
+                   bash syscall_hook_patches.sh
+                   echo "execuated syscall patch successfully."
+                   if [[ "${{ env.KERNELSU_NAME }}" != "KernelSU-Next" ]]; then
+                     cp /tmp/Patches/backport_patches.sh ./
+                     bash backport_patches.sh
+                     if [ "${{ env.FIRST_VERSION }}" -lt 5 ] && [ "${{ env.SECOND_VERSION }}" -lt 10 ]; then
+                         cp /tmp/Patches/Patch/backport_kernel_read_and_kernel_write_to_ksu.patch ./
+                         patch -p1 < backport_kernel_read_and_kernel_write_to_ksu.patch || true
+                         echo "execuated backport patch kernel_read and kernel_read successfully. If you current kernel version < 4.14, then u maybe manual fixed it."
+                     fi
+                     echo "execuated backport patch successfully."
+                   fi
+                else
+                   echo "Cannot found syscall_hook_patches.sh in build project , please check u file existed in build project !"
+                   false
+               fi
             else
               echo "please input vaild option!"
               false
@@ -518,6 +522,46 @@ jobs:
           cp NonGKI_Kernel_Patches/mi11u_hyperos/hyperos_a14_fixed.patch ./
 
           patch -p1 < hyperos_a14_fixed.patch || true
+
+      - name: Updated SUSFS Version
+        if: env.SUSFS_ENABLE == 'true' && env.SUSFS_UPDATE == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE/device_kernel/
+
+          # Fixed sus_su to 5.4 kernel
+          if [[ "${{ env.KERNEL_VERSION }}" == "5.4" ]]; then
+
+            # exec.c
+            sed -i '/static int do_execveat_common(int fd, struct filename \*filename,/i \#ifdef CONFIG_KSU_SUSFS_SUS_SU\nextern bool susfs_is_sus_su_hooks_enabled __read_mostly;\nextern int ksu_handle_execveat_sucompat(int \*fd, struct filename \*\*filename_ptr, void \*argv,\n\t\t\t\tvoid \*envp, int \*flags);\n#endif' fs/exec.c
+            sed -i '/return __do_execve_file(fd, filename, argv, envp, flags, NULL);/i \#ifdef CONFIG_KSU_SUSFS_SUS_SU\n\tif (susfs_is_sus_su_hooks_enabled)\n\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n#endif' fs/exec.c
+
+            # open.c
+            sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/i \#ifdef CONFIG_KSU_SUSFS_SUS_SU\nextern bool susfs_is_sus_su_hooks_enabled __read_mostly;\nextern int ksu_handle_faccessat(int \*dfd, const char __user \*\*filename_user, int \*mode,\n\t\t\tint \*flags);\n#endif' fs/open.c
+            sed -i '/if (mode & ~S_IRWXO)/i \#ifdef CONFIG_KSU_SUSFS_SUS_SU\n\tif (susfs_is_sus_su_hooks_enabled) {\n\t\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n\t}\n#endif' fs/open.c
+
+            # stat.c
+            sed -i '/int vfs_statx(int dfd, const char __user \*filename, int flags,/i \#ifdef CONFIG_KSU_SUSFS_SUS_SU\nextern bool susfs_is_sus_su_hooks_enabled __read_mostly;\nextern int ksu_handle_stat(int \*dfd, const char __user \*\*filename_user, int \*flags);\n#endif' fs/stat.c
+            sed -i '/if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |/i \#ifdef CONFIG_KSU_SUSFS_SUS_SU\n\tif (susfs_is_sus_su_hooks_enabled) {\n\t\tksu_handle_stat(&dfd, &filename, &flags);\n\t}\n#endif' fs/stat.c
+
+            # inode.c
+            sed -i '/if (dentry->d_sb->s_magic != DEVPTS_SUPER_MAGIC)/i \#ifdef CONFIG_KSU_SUSFS_SUS_SU\n\tif (likely(ksu_devpts_hook)) {\n\t\tksu_handle_devpts(dentry->d_inode);\n\t}\n#endif' fs/devpts/inode.c
+
+          fi
+
+          # Upgrade 1.5.7
+          cp /tmp/Patches/Patch/susfs_upgrade_to_157.patch ./
+
+          patch -p1 < susfs_upgrade_to_157.patch || true
+
+          # Extra SUSFS Patch
+          cp NonGKI_Kernel_Patches/mi11u_hyperos/hyper_susfs_157_fixed.patch ./
+
+          patch -p1 < hyper_susfs_157_fixed.patch || true
+
+          # Upgrade 1.5.8
+          cp /tmp/Patches/Patch/susfs_upgrade_to_158_${{ env.KERNEL_VERSION }}.patch ./
+
+          patch -p1 < susfs_upgrade_to_158_${{ env.KERNEL_VERSION }}.patch || true
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
